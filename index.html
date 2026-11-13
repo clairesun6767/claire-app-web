@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Claire</title>
+<!-- 直接沿用 AI_Lover 的樣式（mobile/src/app-2d/styles.css 原檔，168 行） -->
+<link rel="stylesheet" href="ailover.css">
+<style>
+  /* 只補 AI_Lover 沒有的：全螢幕影片、底部安全區、後端設定面板 */
+  .app2d-chat--immersive .app2d-chat-stage video{width:100%;height:100%;object-fit:cover;background:#000}
+  .app2d-chat-lower--immersive{padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+  .app2d-messages{max-height:38vh}
+  .app2d-message-row--her .app2d-message{background:rgba(255,250,251,.94);color:#302830}
+  .app2d-message-row--me .app2d-message{background:#be718d;color:#fff}
+  .app2d-settings-fab{position:fixed;top:calc(10px + env(safe-area-inset-top));right:12px;z-index:20;
+    width:34px;height:34px;border:0;border-radius:50%;background:rgba(255,255,255,.18);color:#fff;font-size:16px}
+  .app2d-sheet{position:fixed;inset:0;z-index:30;display:none;place-items:center;background:rgba(20,14,18,.6)}
+  .app2d-sheet.on{display:grid}
+  .app2d-sheet-card{width:min(92vw,360px);padding:18px;border-radius:18px;background:var(--card);color:var(--text)}
+  .app2d-sheet-card h2{margin:0 0 12px;font-size:17px}
+  .app2d-sheet-card label{display:block;margin:10px 0 4px;font-size:12px;color:var(--muted)}
+  .app2d-sheet-card input{width:100%;min-height:42px;padding:9px 11px;border:1px solid var(--line);border-radius:11px;background:var(--bg);color:var(--text);font-size:13px}
+  .app2d-sheet-card .row{display:flex;gap:8px;margin-top:14px}
+  .app2d-sheet-card button{flex:1;min-height:40px;border:0;border-radius:11px;background:var(--accent);color:#fff;font-weight:600}
+  .app2d-sheet-card button.ghost{background:var(--soft);color:var(--accent2)}
+</style>
+</head>
+<body>
+<div class="app2d-shell app2d-theme-dark">
+  <div class="app2d-chat app2d-chat--immersive" id="chat">
+    <div class="app2d-chat-stage">
+      <video id="vid" poster="claire_poster.jpg" autoplay muted loop playsinline></video>
+      <div class="app2d-stage-caption" role="status" id="caption"><span></span>陪你聊一會兒</div>
+    </div>
+
+    <button class="app2d-settings-fab" id="cfgBtn" title="後端設定">⚙</button>
+
+    <div class="app2d-chat-lower app2d-chat-lower--immersive">
+      <div class="app2d-messages" id="log"></div>
+      <form class="app2d-composer app2d-composer--immersive" id="form">
+        <textarea id="input" rows="1" placeholder="跟 Claire 說話…"></textarea>
+        <button type="button" class="app2d-mic-button" id="mic" aria-label="語音輸入">🎙</button>
+        <button type="submit" class="app2d-send-button" aria-label="送出">➤</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="app2d-sheet" id="sheet">
+  <div class="app2d-sheet-card">
+    <h2>後端位址</h2>
+    <small style="color:var(--muted)">前端可放任何地方（含 GitHub Pages），只要這裡指向跑得到後端的網址。</small>
+    <label>API base</label>
+    <input id="apiInput" placeholder="http://127.0.0.1:8788">
+    <div class="row">
+      <button class="ghost" id="closeCfg">取消</button>
+      <button id="saveCfg">儲存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const SESSION = 'claire-' + Math.random().toString(36).slice(2, 9);
+const isPages = location.hostname.endsWith('github.io');
+const qs = new URLSearchParams(location.search);
+let API = qs.get('api') || localStorage.getItem('claire_api') || (isPages ? '' : '');
+if (qs.get('api')) localStorage.setItem('claire_api', qs.get('api'));
+const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || '';
+if (TOKEN) localStorage.setItem('claire_k', TOKEN);
+const withK = (path) => API + path + (TOKEN ? (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN) : '');
+
+let voiceOn = true, audioEl = null, recog = null, recording = false, mediaRec = null, chunks = [], recording2 = false;
+
+function caption(text) {
+  const c = $('caption');
+  c.innerHTML = '<span></span>' + text;
+}
+
+function add(role, text) {
+  const row = document.createElement('div');
+  row.className = 'app2d-message-row ' + (role === 'me' ? 'app2d-message-row--user app2d-message-row--me' : 'app2d-message-row--her');
+  const m = document.createElement('div');
+  m.className = 'app2d-message';
+  m.textContent = text;
+  row.appendChild(m);
+  $('log').appendChild(row);
+  $('log').scrollTop = $('log').scrollHeight;
+  return m;
+}
+
+async function post(path, body) {
+  const r = await fetch(withK(path), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+async function speak(text) {
+  if (!voiceOn || !text) return;
+  try {
+    caption('正在回應');
+    const j = await post('/say', {text});
+    audioEl = new Audio(API + j.url + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : ''));
+    audioEl.onended = () => caption('陪你聊一會兒');
+    await audioEl.play().catch(() => {});
+  } catch (e) { console.warn('TTS:', e.message); caption('陪你聊一會兒'); }
+}
+
+async function send(text) {
+  text = (text || '').trim();
+  if (!text) return;
+  add('me', text);
+  $('input').value = ''; $('input').style.height = 'auto';
+  caption('正在思考');
+  try {
+    const j = await post('/chat', {text, session: SESSION});
+    add('her', j.reply);
+    caption('陪你聊一會兒');
+    speak(j.reply);
+  } catch (e) {
+    add('her', '（連線失敗：' + e.message + '）');
+    caption('連線失敗');
+  }
+}
+
+$('form').addEventListener('submit', e => { e.preventDefault(); send($('input').value); });
+$('input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send($('input').value); }
+});
+$('input').addEventListener('input', e => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 94) + 'px';
+});
+
+$('cfgBtn').onclick = () => { $('apiInput').value = API; $('sheet').classList.add('on'); };
+$('closeCfg').onclick = () => $('sheet').classList.remove('on');
+$('saveCfg').onclick = () => {
+  API = $('apiInput').value.trim().replace(/\/$/, '');
+  localStorage.setItem('claire_api', API);
+  $('sheet').classList.remove('on');
+  add('her', '（後端已設為 ' + (API || '同源') + '）');
+};
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+async function recordAndTranscribe() {
+  const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+  chunks = [];
+  mediaRec = new MediaRecorder(stream);
+  mediaRec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  mediaRec.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    caption('正在聆聽');
+    try {
+      const blob = new Blob(chunks, {type: 'audio/webm'});
+      const r = await fetch(withK('/stt'), {method: 'POST', body: blob});
+      const j = await r.json();
+      if (j.text) send(j.text); else caption('沒聽懂');
+    } catch (e) { caption('辨識失敗'); }
+  };
+  mediaRec.start();
+  recording2 = true;
+  $('mic').classList.add('is-active');
+  caption('正在聆聽');
+  setTimeout(() => { if (recording2) { mediaRec.stop(); recording2 = false; $('mic').classList.remove('is-active'); } }, 8000);
+}
+
+$('mic').onclick = async () => {
+  if (SR) {
+    if (recording) { recog.stop(); return; }
+    recog = new SR();
+    recog.lang = 'zh-TW'; recog.interimResults = true; recog.continuous = false;
+    recog.onstart = () => { recording = true; $('mic').classList.add('is-active'); caption('正在聆聽'); };
+    recog.onresult = e => { let t = ''; for (const r of e.results) t += r[0].transcript; $('input').value = t; };
+    recog.onerror = () => caption('語音辨識失敗');
+    recog.onend = () => {
+      recording = false; $('mic').classList.remove('is-active');
+      const t = $('input').value.trim();
+      if (t) send(t); else caption('陪你聊一會兒');
+    };
+    recog.start();
+    return;
+  }
+  if (recording2) { mediaRec.stop(); recording2 = false; $('mic').classList.remove('is-active'); return; }
+  try { await recordAndTranscribe(); } catch (e) { caption('麥克風無法開啟'); }
+};
+
+// 舞台影片：從後端取（Pages 也能用，只要 API 指到後端）
+try { $('vid').src = withK('/avatar/claire_presence'); } catch (e) {}
+
+add('her', '我在。想聊什麼都可以。');
+</script>
+</body>
+</html>
