@@ -64,13 +64,10 @@
 const $ = id => document.getElementById(id);
 const SESSION = 'claire-' + Math.random().toString(36).slice(2, 9);
 const isPages = location.hostname.endsWith('github.io');
-// 目前後端通道（會過期；換通道時改這兩行並重新 push）
-const BAKED_API = 'https://12e7b2dfe8b8bace-1-173-109-152.serveousercontent.com';
-const BAKED_K = 'RJivR3YzxS';
 const qs = new URLSearchParams(location.search);
-let API = qs.get('api') || localStorage.getItem('claire_api') || BAKED_API;
+let API = qs.get('api') || localStorage.getItem('claire_api') || (isPages ? '' : '');
 if (qs.get('api')) localStorage.setItem('claire_api', qs.get('api'));
-const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || BAKED_K;
+const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || '';
 if (TOKEN) localStorage.setItem('claire_k', TOKEN);
 const withK = (path) => API + path + (TOKEN ? (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN) : '');
 
@@ -100,11 +97,25 @@ async function post(path, body) {
   return j;
 }
 
+async function pollJob(jid, timeoutMs = 120000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise(r => setTimeout(r, 700));
+    const r = await fetch(withK('/job/' + jid));
+    const j = await r.json();
+    if (j.status === 'done') return j;
+    if (j.status === 'error') throw new Error(j.error || 'job failed');
+  }
+  throw new Error('timeout');
+}
+
 async function speak(text) {
   if (!voiceOn || !text) return;
   try {
     caption('正在回應');
-    const j = await post('/say', {text});
+    const h = await post('/say_async', {text});
+    const j = await pollJob(h.job);
+    if (j.error) throw new Error(j.error);
     audioEl = new Audio(API + j.url + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : ''));
     audioEl.onended = () => caption('陪你聊一會兒');
     await audioEl.play().catch(() => {});
@@ -118,7 +129,9 @@ async function send(text) {
   $('input').value = ''; $('input').style.height = 'auto';
   caption('正在思考');
   try {
-    const j = await post('/chat', {text, session: SESSION});
+    const h = await post('/chat_async', {text, session: SESSION});
+    const j = await pollJob(h.job);
+    if (j.error) throw new Error(j.error);
     add('her', j.reply);
     caption('陪你聊一會兒');
     speak(j.reply);
