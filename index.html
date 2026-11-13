@@ -65,7 +65,7 @@ const $ = id => document.getElementById(id);
 const SESSION = 'claire-' + Math.random().toString(36).slice(2, 9);
 const isPages = location.hostname.endsWith('github.io');
 // 目前後端通道（會過期；換通道時改這兩行並重新 push）
-const BAKED_API = 'https://pizwr-1-173-109-152.run.pinggy-free.link';
+const BAKED_API = 'https://12e7b2dfe8b8bace-1-173-109-152.serveousercontent.com';
 const BAKED_K = 'RJivR3YzxS';
 const qs = new URLSearchParams(location.search);
 let API = qs.get('api') || localStorage.getItem('claire_api') || BAKED_API;
