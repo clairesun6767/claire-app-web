@@ -64,10 +64,13 @@
 const $ = id => document.getElementById(id);
 const SESSION = 'claire-' + Math.random().toString(36).slice(2, 9);
 const isPages = location.hostname.endsWith('github.io');
+// 目前後端通道（會過期；換通道時改這兩行並重新 push）
+const BAKED_API = 'https://pizwr-1-173-109-152.run.pinggy-free.link';
+const BAKED_K = 'RJivR3YzxS';
 const qs = new URLSearchParams(location.search);
-let API = qs.get('api') || localStorage.getItem('claire_api') || (isPages ? '' : '');
+let API = qs.get('api') || localStorage.getItem('claire_api') || BAKED_API;
 if (qs.get('api')) localStorage.setItem('claire_api', qs.get('api'));
-const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || '';
+const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || BAKED_K;
 if (TOKEN) localStorage.setItem('claire_k', TOKEN);
 const withK = (path) => API + path + (TOKEN ? (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN) : '');
 
