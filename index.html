@@ -66,10 +66,15 @@ const $ = id => document.getElementById(id);
 const SESSION = 'claire-' + Math.random().toString(36).slice(2, 9);
 const isPages = location.hostname.endsWith('github.io');
 // 目前後端通道（會過期；換通道時改這兩行）
-const BAKED_API = 'https://12e7b2dfe8b8bace-1-173-109-152.serveousercontent.com';
+const BAKED_API = 'https://e0eb540a7f795251-1-173-109-152.serveousercontent.com';
 const BAKED_K = 'RJivR3YzxS';
 const qs = new URLSearchParams(location.search);
 let API = qs.get('api') || localStorage.getItem('claire_api') || BAKED_API;
+// 後端候選：使用者設定 → 內建通道 → 家裡 LAN
+// 後端位址由 Pages 上的 backend.txt 決定（換通道時我只要改那個檔，不必重裝 APK）
+const REMOTE_CFG = 'https://clairesun6767.github.io/claire-app-web/backend.txt';
+
+const CANDIDATES = [localStorage.getItem('claire_api'), BAKED_API, 'http://192.168.1.101:8788'].filter(Boolean);
 if (qs.get('api')) localStorage.setItem('claire_api', qs.get('api'));
 const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || BAKED_K;
 if (TOKEN) localStorage.setItem('claire_k', TOKEN);
@@ -133,6 +138,7 @@ async function send(text) {
   $('input').value = ''; $('input').style.height = 'auto';
   caption('正在思考');
   try {
+    await probe();
     const h = await post('/chat_async', {text, session: SESSION});
     const j = await pollJob(h.job);
     if (j.error) throw new Error(j.error);
@@ -140,7 +146,7 @@ async function send(text) {
     caption('陪你聊一會兒');
     speak(j.reply);
   } catch (e) {
-    add('her', '（連線失敗：' + e.message + '）');
+    add('her', '（連線失敗：' + e.message + '｜目前後端 ' + (API || '未設定') + '）');
     caption('連線失敗');
   }
 }
@@ -207,8 +213,40 @@ $('mic').onclick = async () => {
   try { await recordAndTranscribe(); } catch (e) { caption('麥克風無法開啟'); }
 };
 
-// 舞台影片：從後端取（Pages 也能用，只要 API 指到後端）
-try { $('vid').src = withK('/avatar/claire_presence'); } catch (e) {}
+// 舞台影片：先用本地檔（一定動），後端連上後再換成後端版本
+$('vid').src = 'claire_presence.mp4';
+(async () => {
+  try {
+    const r = await fetch(REMOTE_CFG + '?t=' + Date.now(), {cache: 'no-store'});
+    if (r.ok) {
+      const u = (await r.text()).trim().split('
+')[0].trim();
+      if (u.startsWith('http')) {
+        API = u;
+        CANDIDATES.unshift(u);
+        $('vid').src = u + '/avatar/claire_presence' + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : '');
+      }
+    }
+  } catch (e) {}
+})();
+$('vid').play().catch(() => {});
+
+async function probe() {
+  for (const base of CANDIDATES) {
+    try {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 2500);
+      const r = await fetch(base + '/health', {signal: c.signal});
+      clearTimeout(t);
+      if (r.ok) {
+        API = base;
+        $('vid').src = base + '/avatar/claire_presence' + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : '');
+        return true;
+      }
+    } catch (e) {}
+  }
+  return false;
+}
 
 const bt = $('buildTag'); if (bt) bt.textContent = BUILD_TAG;
 caption('陪你聊一會兒 · ' + BUILD_TAG);
