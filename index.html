@@ -219,8 +219,7 @@ $('vid').src = 'claire_presence.mp4';
   try {
     const r = await fetch(REMOTE_CFG + '?t=' + Date.now(), {cache: 'no-store'});
     if (r.ok) {
-      const u = (await r.text()).trim().split('
-')[0].trim();
+      const u = (await r.text()).trim().split(String.fromCharCode(10))[0].trim();
       if (u.startsWith('http')) {
         API = u;
         CANDIDATES.unshift(u);
