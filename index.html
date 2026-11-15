@@ -8,7 +8,11 @@
 <link rel="stylesheet" href="ailover.css">
 <style>
   /* 只補 AI_Lover 沒有的：全螢幕影片、底部安全區、後端設定面板 */
-  .app2d-chat--immersive .app2d-chat-stage video{width:100%;height:100%;object-fit:cover;background:#000}
+  /* 全螢幕：影片蓋滿整個視窗（含瀏海/系統列區域），狀態列由 MainActivity 隱藏 */
+  html,body{margin:0;padding:0;width:100%;height:100%;height:100dvh;overflow:hidden;background:#000}
+  .app2d-shell{height:100dvh;max-height:100dvh}
+  .app2d-chat--immersive .app2d-chat-stage video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    object-position:center top;background:#000}
   .app2d-chat-lower--immersive{padding-bottom:calc(10px + env(safe-area-inset-bottom))}
   .app2d-messages{max-height:38vh}
   .app2d-message-row--her .app2d-message{background:rgba(255,250,251,.94);color:#302830}
@@ -70,12 +74,12 @@
 </div>
 
 <script>
-const BUILD_TAG = 'v3-async-serveo';
+const BUILD_TAG = 'v4-immersive';
 const $ = id => document.getElementById(id);
 const SESSION = 'claire-' + Math.random().toString(36).slice(2, 9);
 const isPages = location.hostname.endsWith('github.io');
-// 目前後端通道（會過期；換通道時改這兩行）
-const BAKED_API = 'https://e0eb540a7f795251-1-173-109-152.serveousercontent.com';
+// 內建通道已失效（serveo 斷線），不要再寫死在這裡：後端位址改由 backend.txt / 設定面板提供
+const BAKED_API = '';
 const BAKED_K = 'RJivR3YzxS';
 const qs = new URLSearchParams(location.search);
 let API = qs.get('api') || localStorage.getItem('claire_api') || BAKED_API;
@@ -83,13 +87,31 @@ let API = qs.get('api') || localStorage.getItem('claire_api') || BAKED_API;
 // 後端位址由 Pages 上的 backend.txt 決定（換通道時我只要改那個檔，不必重裝 APK）
 const REMOTE_CFG = 'https://clairesun6767.github.io/claire-app-web/backend.txt';
 
-const CANDIDATES = [localStorage.getItem('claire_api'), BAKED_API, 'http://192.168.1.101:8788'].filter(Boolean);
+const LAN_API = 'http://192.168.1.101:8788';
+const CANDIDATES = [localStorage.getItem('claire_api'), BAKED_API, LAN_API, 'http://127.0.0.1:8788'].filter(Boolean);
 if (qs.get('api')) localStorage.setItem('claire_api', qs.get('api'));
 const TOKEN = new URLSearchParams(location.search).get('k') || localStorage.getItem('claire_k') || BAKED_K;
 if (TOKEN) localStorage.setItem('claire_k', TOKEN);
 const withK = (path) => API + path + (TOKEN ? (path.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(TOKEN) : '');
 
-let voiceOn = true, audioEl = null, recog = null, recording = false, mediaRec = null, chunks = [], recording2 = false;
+let voiceOn = true, recog = null, recording = false, mediaRec = null, chunks = [], recording2 = false;
+
+// ---- 語音播放：單一常駐 Audio + 首次觸碰解鎖 ----
+// Android WebView 預設「播放需使用者手勢」，TTS 卻是在 await 之後才播 → 必須先解鎖同一個元素。
+const audioEl = new Audio();
+audioEl.preload = 'auto';
+audioEl.setAttribute('playsinline', '');
+let audioUnlocked = false;
+const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=';
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  audioEl.src = SILENT_WAV;
+  const p = audioEl.play();
+  if (p && p.catch) p.catch(() => {});
+}
+['touchstart', 'pointerdown', 'click', 'keydown'].forEach(ev =>
+  document.addEventListener(ev, unlockAudio, {capture: true, passive: true}));
 
 function caption(text) {
   const c = $('caption');
@@ -134,10 +156,16 @@ async function speak(text) {
     const h = await post('/say_async', {text});
     const j = await pollJob(h.job);
     if (j.error) throw new Error(j.error);
-    audioEl = new Audio(API + j.url + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : ''));
+    audioEl.pause();
+    audioEl.src = API + j.url + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : '');
     audioEl.onended = () => caption('陪你聊一會兒');
-    await audioEl.play().catch(() => {});
-  } catch (e) { console.warn('TTS:', e.message); caption('陪你聊一會兒'); }
+    audioEl.onerror = () => caption('語音檔載入失敗');
+    await audioEl.play();                       // 解鎖過就一定放得出來；失敗要大聲顯示，不再靜默吃掉
+    caption('正在說話 · ' + (j.provider || 'tts'));
+  } catch (e) {
+    console.warn('TTS:', e.message);
+    caption('語音不可用：' + (e.message || '未知'));
+  }
 }
 
 async function send(text) {
@@ -228,22 +256,42 @@ $('mic').onclick = async () => {
   try { await recordAndTranscribe(); } catch (e) { caption('麥克風無法開啟'); }
 };
 
-// 舞台影片：先用本地檔（一定動），後端連上後再換成後端版本
-$('vid').src = 'claire_presence.mp4';
+// ---- 舞台影片：本機檔優先（APK 內建必可播），後端底片只有 /health 驗證過才用 ----
+const vidEl = $('vid');
+const LOCAL_FALLBACKS = ['claire_presence.mp4', '/static/claire_presence.mp4']; // APK 根目錄 / 後端靜態路徑
+let vidMode = 'local', localTries = 0, currentVidUrl = '';
+function tryPlay(url) {
+  currentVidUrl = url;
+  vidEl.src = url;
+  vidEl.load();
+  const p = vidEl.play();
+  if (p && p.catch) p.catch(() => {});
+}
+function playLocalVideo() {
+  vidMode = 'local';
+  tryPlay(LOCAL_FALLBACKS[Math.min(localTries, LOCAL_FALLBACKS.length - 1)]);
+}
+function setVideoFromBase(base) {
+  if (!base) return;
+  vidMode = 'remote';
+  tryPlay(base + '/avatar/claire_presence' + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : ''));
+}
+vidEl.addEventListener('error', () => {
+  if (vidMode === 'remote') { localTries = 0; playLocalVideo(); caption('影片改用本機檔'); return; }
+  if (localTries < LOCAL_FALLBACKS.length - 1) { localTries += 1; playLocalVideo(); caption('影片改用備援路徑'); return; }
+  caption('影片無法播放');
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) vidEl.play().catch(() => {}); });
+playLocalVideo();
 (async () => {
   try {
     const r = await fetch(REMOTE_CFG + '?t=' + Date.now(), {cache: 'no-store'});
     if (r.ok) {
       const u = (await r.text()).trim().split(String.fromCharCode(10))[0].trim();
-      if (u.startsWith('http')) {
-        API = u;
-        CANDIDATES.unshift(u);
-        $('vid').src = u + '/avatar/claire_presence' + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : '');
-      }
+      if (u.startsWith('http')) { CANDIDATES.unshift(u); }   // 只加入候選，等 probe() 驗證通過才換來源
     }
   } catch (e) {}
 })();
-$('vid').play().catch(() => {});
 
 async function probe() {
   for (const base of CANDIDATES) {
@@ -254,7 +302,7 @@ async function probe() {
       clearTimeout(t);
       if (r.ok) {
         API = base;
-        $('vid').src = base + '/avatar/claire_presence' + (TOKEN ? '?k=' + encodeURIComponent(TOKEN) : '');
+        setVideoFromBase(base);
         return true;
       }
     } catch (e) {}
